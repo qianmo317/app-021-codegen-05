@@ -3,6 +3,7 @@ import { ClassList } from './pages/ClassList'
 import { Setup } from './pages/Setup'
 import { Rotations } from './pages/Rotations'
 import { Fairness } from './pages/Fairness'
+import { Deskmates } from './pages/Deskmates'
 import { Print } from './pages/Print'
 import { useStore } from './store'
 import { Armchair } from 'lucide-react'
@@ -37,7 +38,7 @@ export function App() {
 
 function Route({ path }: { path: string }) {
   if (path === '/' || path === '') return <ClassList />
-  const m = path.match(/^\/class\/([^/]+)(\/(setup|rotations|fairness|print))?$/)
+  const m = path.match(/^\/class\/([^/]+)(\/(setup|rotations|fairness|deskmates|print))?$/)
   if (m) {
     const id = decodeURIComponent(m[1])
     switch (m[3]) {
@@ -47,6 +48,8 @@ function Route({ path }: { path: string }) {
         return <Rotations classId={id} />
       case 'fairness':
         return <Fairness classId={id} />
+      case 'deskmates':
+        return <Deskmates classId={id} />
       case 'print':
         return <Print classId={id} />
       default:

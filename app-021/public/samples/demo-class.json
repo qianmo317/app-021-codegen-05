@@ -88,8 +88,9 @@
     { "id": "s39", "name": "蒋一帆", "heightCm": 158, "vision": "none", "tier": 2, "mustApartFrom": [] },
     { "id": "s40", "name": "余思彤", "heightCm": 142, "vision": "none", "tier": 3, "mustApartFrom": [] }
   ],
-  "constraints": { "frontRows": 3, "heightRule": true, "mixTiers": true },
+  "constraints": { "frontRows": 3, "heightRule": true, "mixTiers": true, "deskmateLimit": 2 },
   "weeks": 20,
   "seed": 42,
-  "assignments": []
+  "assignments": [],
+  "neverPairs": []
 }

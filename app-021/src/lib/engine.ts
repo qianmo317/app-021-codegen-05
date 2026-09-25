@@ -40,6 +40,7 @@ interface Prepared {
   frontSeats: number
   heightRule: boolean
   mixTiers: boolean
+  limit: number // 任意两人整学期同桌次数上限（默认 2，仅影响软惩罚梯度）
 }
 
 function prepare(cls: ClassEntity): Prepared {
@@ -70,6 +71,12 @@ function prepare(cls: ClassEntity): Prepared {
   })
 
   const apartSet = new Set<number>()
+  const addPair = (idA: string, idB: string) => {
+    const i = stIdx.get(idA)
+    const j = stIdx.get(idB)
+    if (i === undefined || j === undefined || j === i) return
+    apartSet.add(pairKey(i, j))
+  }
   students.forEach((s, i) => {
     for (const otherId of s.mustApartFrom) {
       const j = stIdx.get(otherId)
@@ -77,6 +84,8 @@ function prepare(cls: ClassEntity): Prepared {
       apartSet.add(pairKey(i, j))
     }
   })
+  // 老师标记「以后不要再同桌」的对：与「必须分开」同等的硬约束，每周生成都要避开
+  for (const np of cls.neverPairs ?? []) addPair(np.a, np.b)
 
   const heights = new Float64Array(n).fill(-1)
   const tier = new Int8Array(n)
@@ -104,6 +113,7 @@ function prepare(cls: ClassEntity): Prepared {
     frontSeats: frontRows * cls.layout.cols,
     heightRule: cls.constraints.heightRule,
     mixTiers: cls.constraints.mixTiers,
+    limit: Math.max(1, cls.constraints.deskmateLimit ?? 2),
   }
 }
 
@@ -124,11 +134,22 @@ function violOf(p: Prepared, st: number, seatIdx: number): number {
   return v
 }
 
-// 同桌对惩罚（含「必须分开」= 硬约束、分层搭配、重复次数）
+// 同桌对惩罚（含「必须分开 / 永不同桌」= 硬约束、分层搭配、重复次数）
+// 重复梯度随老师设定的上限变化：达到上限之前每次重复轻罚（鼓励换人），
+// 一旦再坐就会超出上限，逐级重罚。默认上限 2 时与原常量 REPEAT1/REPEAT2/REPEAT3 完全一致。
 function pairPen(p: Prepared, deskCount: Map<number, number>, key: number): number {
   if (p.apartSet.has(key)) return HARD
   const count = deskCount.get(key) ?? 0
-  let pen = count === 0 ? FRESH_PAIR : count === 1 ? REPEAT1 : count === 2 ? REPEAT2 : REPEAT3
+  let pen: number
+  if (count === 0) {
+    pen = FRESH_PAIR
+  } else if (count < p.limit) {
+    pen = REPEAT1 // 第 2 次 …… 未到上限
+  } else if (count === p.limit) {
+    pen = REPEAT2 // 再坐一次就超限，重罚
+  } else {
+    pen = REPEAT3 // 已经超限，极重罚
+  }
   if (p.mixTiers) {
     const ta = p.tier[Math.floor(key / 4096)]
     const tb = p.tier[key % 4096]
@@ -637,6 +658,28 @@ export function generateMissingWeeks(cls: ClassEntity, opts?: GenOptions): Assig
     out.push(generateOneWeek(p, hist, week, seed))
   }
   return out
+}
+
+/**
+ * 仅重新生成指定的若干周（其余周保持不变）。
+ * 用于「标记永不同桌后，把受影响的历史周重排」：按周次升序逐个生成，
+ * 每次都以「未重排周 + 已重排周」重建历史，保证累计公平性统计连续。
+ */
+export function regenerateWeeks(cls: ClassEntity, weekSet: Set<number>, opts?: GenOptions): Assignment[] {
+  const seed = opts?.seed ?? cls.seed
+  const targets = [...weekSet].filter((w) => w >= 1 && w <= cls.weeks).sort((x, y) => x - y)
+  if (targets.length === 0) return cls.assignments
+  const p = prepare(cls)
+  const done = new Map<number, Assignment>()
+  for (const asg of cls.assignments) {
+    if (!weekSet.has(asg.week)) done.set(asg.week, { ...asg, map: { ...asg.map }, score: { ...asg.score } })
+  }
+  for (const week of targets) {
+    const kept = [...done.values()].filter((a) => a.week < week)
+    const hist = buildHistory(p, kept)
+    done.set(week, generateOneWeek(p, hist, week, seed))
+  }
+  return [...done.values()].sort((a, b) => a.week - b.week)
 }
 
 /** 随机一个新种子（仅 UI 使用，不参与引擎确定性） */

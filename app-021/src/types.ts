@@ -39,11 +39,19 @@ export interface Assignment {
   map: Record<SeatId, StudentId>
   score: { fairness: number; repeats: number }
 }
-
 export interface Constraints {
   frontRows: number // 视力需求学生必须在前 N 排
   heightRule: boolean // 高个靠后
   mixTiers: boolean // 同桌分层搭配（学习好的带一般的）
+  deskmateLimit: number // 任意两人整学期同桌次数上限（默认 2），超限只做提醒、不禁止
+}
+
+// 老师手动标记「以后不要再同桌」的一对学生（规范化后的无向对，按 id 排序）
+export interface NeverPair {
+  a: StudentId
+  b: StudentId
+  createdAt: number
+  note?: string
 }
 
 export interface LayoutConfig {
@@ -66,6 +74,7 @@ export interface ClassEntity {
   weeks: number
   seed: number
   assignments: Assignment[]
+  neverPairs: NeverPair[] // 「以后不要再同桌」名单：生成与手工交换时强制避开
 }
 
 export interface GenParams {

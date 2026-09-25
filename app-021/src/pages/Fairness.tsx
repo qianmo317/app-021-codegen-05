@@ -3,11 +3,11 @@ import { Link } from '../router'
 import { useStore } from '../store'
 import { computeFairness } from '../lib/fairness'
 import { downloadCSV, fairnessCSV } from '../lib/csv'
-import { AlertTriangle, ArrowLeft, BarChart3, CheckCircle2, Download } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Ban, BarChart3, CheckCircle2, Download } from 'lucide-react'
 
 export function Fairness({ classId }: { classId: string }) {
-  const { getClass } = useStore()
-  const cls = getClass(classId)
+  const store = useStore()
+  const cls = store.getClass(classId)
   const report = useMemo(() => (cls ? computeFairness(cls) : null), [cls])
 
   if (!cls || !report) {
@@ -21,8 +21,25 @@ export function Fairness({ classId }: { classId: string }) {
 
   const nameById = new Map(cls.students.map((s) => [s.id, s.name]))
   const maxWeeks = Math.max(1, report.totalWeeks)
+  const limit = report.deskmateLimit
 
   const exportCsv = () => downloadCSV(`${cls.name}-公平性统计.csv`, fairnessCSV(cls, report))
+  const weekRanges = (weeks: number[]) => {
+    const out: string[] = []
+    let start = weeks[0]
+    let prev = weeks[0]
+    const flush = () => out.push(start === prev ? `第${start}周` : `第${start}-${prev}周`)
+    for (const w of weeks.slice(1)) {
+      if (w === prev + 1) prev = w
+      else {
+        flush()
+        start = w
+        prev = w
+      }
+    }
+    flush()
+    return out.join('、')
+  }
 
   return (
     <div className="page page-wide">
@@ -39,6 +56,9 @@ export function Fairness({ classId }: { classId: string }) {
             轮换结果
           </Link>
           <span className="tab tab-active">公平性报告</span>
+          <Link className="tab" to={`/class/${cls.id}/deskmates`}>
+            同桌记录
+          </Link>
           <Link className="tab" to={`/class/${cls.id}/print`}>
             打印
           </Link>
@@ -94,7 +114,7 @@ export function Fairness({ classId }: { classId: string }) {
               <span className={`stat-num ${report.deskmateOverLimit.length ? 'warn' : ''}`} data-testid="fair-desk">
                 {report.deskmateOverLimit.length}
               </span>
-              <span className="stat-label">同桌超 2 次的对</span>
+              <span className="stat-label">同桌超 {limit} 次的对</span>
             </div>
             <div className="card stat">
               <span className="stat-num" data-testid="fair-height">
@@ -117,11 +137,58 @@ export function Fairness({ classId }: { classId: string }) {
             </div>
           )}
 
+          {report.blockedHistory.length > 0 && (
+            <div className="card warn-card" data-testid="blocked-history-card">
+              <h3>
+                <Ban size={16} /> 「永不同桌」名单与已生成周冲突（{report.blockedHistory.length} 处）
+              </h3>
+              <p>{report.blockedHistory.slice(0, 8).map((v) => v.detail).join('；')}</p>
+              <p className="small">
+                到「同桌记录」页追加标记时会自动重排受影响周次；也可到轮换结果页逐周手动处理。
+              </p>
+            </div>
+          )}
+
           {report.deskmateOverLimit.length > 0 && (
-            <div className="card warn-card">
-              <h3>同桌超限报告（目标：任意两人 ≤ 2 次）</h3>
-              <p>
-                {report.deskmateOverLimit.map((d) => `${d.a}–${d.b}（${d.count} 次）`).join('、')}
+            <div className="card warn-card" data-testid="desk-over-warn">
+              <h3>同桌超限报告（目标：任意两人 ≤ {limit} 次）—— 下次换座建议分开</h3>
+              <div className="table-wrap">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>同桌对</th>
+                      <th>次数</th>
+                      <th>分别在第几周</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.deskmateOverLimit.map((d) => (
+                      <tr key={`${d.aId}|${d.bId}`}>
+                        <td>
+                          {d.a} – {d.b}
+                        </td>
+                        <td className="warn-text">{d.count} 次</td>
+                        <td>{weekRanges(d.weeks)}</td>
+                        <td>
+                          <button
+                            className="btn btn-sm"
+                            data-testid="desk-ban-from-report"
+                            onClick={async () => {
+                              const res = await store.addNeverPair(cls.id, d.aId, d.bId)
+                              if (!res.ok) window.alert(res.error)
+                            }}
+                          >
+                            <Ban size={13} /> 标记永不同桌
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="small">
+                <Link to={`/class/${cls.id}/deskmates`}>到「同桌记录」查看完整台账与两人查询 →</Link>
               </p>
             </div>
           )}
@@ -188,7 +255,7 @@ export function Fairness({ classId }: { classId: string }) {
                         <td>{r.avgScore.toFixed(2)}</td>
                         <td>{top ? (nameById.get(top.studentId) ?? '') : '—'}</td>
                         <td>{top?.count ?? 0}</td>
-                        <td>{r.maxDeskmateRepeat > 2 ? <span className="warn-text">同桌超限</span> : <CheckCircle2 size={13} className="good" />}</td>
+                        <td>{r.maxDeskmateRepeat > limit ? <span className="warn-text">同桌超限</span> : <CheckCircle2 size={13} className="good" />}</td>
                       </tr>
                     )
                   })}

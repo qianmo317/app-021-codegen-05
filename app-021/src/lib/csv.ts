@@ -1,5 +1,6 @@
 import type { ClassEntity } from '../types'
 import type { FairnessReport } from './fairness'
+import { allPairs, buildLedger, topPartners } from './deskmates'
 import { buildSeatIndex } from './layout'
 
 // CSV 导出（带 BOM，Excel 直接打开不乱码）
@@ -38,9 +39,10 @@ export function fairnessCSV(cls: ClassEntity, report: FairnessReport): (string |
     '平均位置分',
     '最常同桌',
     '同桌次数',
-    '重复超限(>2次)',
+    '重复超限列',
   ])
   const visionText = { none: '', front_required: '需前排', middle_required: '需中间' } as const
+  const limit = report.deskmateLimit ?? 2
   for (const r of report.rows) {
     const top = r.deskmates[0]
     rows.push([
@@ -55,13 +57,48 @@ export function fairnessCSV(cls: ClassEntity, report: FairnessReport): (string |
       r.avgScore.toFixed(2),
       top ? (cls.students.find((s) => s.id === top.studentId)?.name ?? '') : '',
       top ? top.count : 0,
-      r.maxDeskmateRepeat > 2 ? `与${r.deskmates.filter((d) => d.count > 2).length}人超限` : '',
+      r.maxDeskmateRepeat > limit ? `与${r.deskmates.filter((d) => d.count > limit).length}人超限` : '',
     ])
   }
   rows.push([])
   rows.push(['位置分说明：位置分 = 前后排权重(0~2，越小越靠前) + 中间度权重(0~1，越小越靠中间)，分数越低位置越好'])
   if (report.deskmateOverLimit.length) {
-    rows.push(['同桌超限对：', ...report.deskmateOverLimit.map((d) => `${d.a}-${d.b}(${d.count}次)`)])
+    rows.push([
+      `同桌超限对（上限 ${limit} 次）：`,
+      ...report.deskmateOverLimit.map((d) => `${d.a}-${d.b}(${d.count}次,第${d.weeks.join('/')}周)`),
+    ])
+  }
+  return rows
+}
+
+// 同桌台账：全班每个学生一行，列出每位同桌及周次
+export function ledgerCSV(cls: ClassEntity): (string | number)[][] {
+  const ledger = buildLedger(cls)
+  const nameOf = new Map(cls.students.map((s) => [s.id, s.name]))
+  const rows: (string | number)[][] = []
+  rows.push([`班级：${cls.name}`])
+  rows.push([`统计周数：${ledger.totalWeeks}（第 ${ledger.weeks.join('/') || '无'} 周）`])
+  rows.push([`同桌次数上限：${cls.constraints.deskmateLimit ?? 2}`])
+  rows.push(['学生', '最常同桌', '最常同桌次数', '全部同桌（姓名:次数:周次）'])
+  for (const s of cls.students) {
+    const partners = ledger.partners.get(s.id) ?? []
+    const tops = topPartners(ledger, s.id)
+    rows.push([
+      s.name,
+      tops.map((t) => nameOf.get(t.other) ?? t.other).join('、'),
+      tops[0]?.count ?? 0,
+      partners.map((p) => `${nameOf.get(p.other) ?? p.other}:${p.count}:第${p.weeks.join('/')}周`).join('；'),
+    ])
+  }
+  rows.push([])
+  rows.push(['全部同桌对（按次数降序）', '次数', '分别在第几周', '超限'])
+  for (const p of allPairs(ledger)) {
+    rows.push([
+      `${nameOf.get(p.a) ?? p.a}-${nameOf.get(p.b) ?? p.b}`,
+      p.count,
+      p.weeks.join('/'),
+      p.count > (cls.constraints.deskmateLimit ?? 2) ? '是' : '',
+    ])
   }
   return rows
 }

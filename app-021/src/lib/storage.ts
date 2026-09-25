@@ -1,4 +1,4 @@
-import type { ClassEntity } from '../types'
+import type { ClassEntity, NeverPair } from '../types'
 
 // 数据留在浏览器（IndexedDB），不上传任何学生信息（隐私底线）
 export interface Storage {
@@ -7,10 +7,38 @@ export interface Storage {
   remove(id: string): Promise<void>
 }
 
+// 旧版本数据归一化：补齐后加的字段（deskmateLimit / neverPairs），并清洗「永不同桌」名单
+export function normalizeClass(raw: ClassEntity): ClassEntity {
+  const cls: ClassEntity = { ...raw }
+  cls.constraints = {
+    frontRows: cls.constraints?.frontRows ?? 2,
+    heightRule: cls.constraints?.heightRule ?? true,
+    mixTiers: cls.constraints?.mixTiers ?? true,
+    deskmateLimit: cls.constraints?.deskmateLimit ?? 2,
+  }
+  if (!Number.isFinite(cls.constraints.deskmateLimit) || cls.constraints.deskmateLimit < 1) {
+    cls.constraints.deskmateLimit = 2
+  }
+  const valid = new Set((cls.students ?? []).map((s) => s.id))
+  const seen = new Set<string>()
+  const neverPairs: NeverPair[] = []
+  for (const np of cls.neverPairs ?? []) {
+    if (!np || !valid.has(np.a) || !valid.has(np.b) || np.a === np.b) continue
+    const [a, b] = np.a < np.b ? [np.a, np.b] : [np.b, np.a]
+    const key = `${a}|${b}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    neverPairs.push({ a, b, createdAt: np.createdAt ?? 0, note: np.note })
+  }
+  cls.neverPairs = neverPairs
+  cls.assignments ??= []
+  return cls
+}
+
 export class MemoryStorage implements Storage {
   private map = new Map<string, ClassEntity>()
   async getAll(): Promise<ClassEntity[]> {
-    return [...this.map.values()].map((c) => structuredClone(c))
+    return [...this.map.values()].map((c) => normalizeClass(structuredClone(c)))
   }
   async put(cls: ClassEntity): Promise<void> {
     this.map.set(cls.id, structuredClone(cls))
@@ -53,7 +81,7 @@ export class IndexedDBStorage implements Storage {
 
   async getAll(): Promise<ClassEntity[]> {
     const all = await this.tx<ClassEntity[]>('readonly', (s) => s.getAll() as IDBRequest<ClassEntity[]>)
-    return all ?? []
+    return (all ?? []).map(normalizeClass)
   }
   async put(cls: ClassEntity): Promise<void> {
     await this.tx('readwrite', (s) => s.put(cls))

@@ -246,6 +246,24 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand-weak)
 .modal h2 { margin-bottom: 4px; }
 .modal-actions { display: flex; gap: 8px; margin-top: 10px; }
 
+/* ---------- 同桌记录页 ---------- */
+.row-warn { background: #fffbeb; }
+.row-warn:hover { background: #fef3c7 !important; }
+.query-result {
+  display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--good-weak); color: var(--good); border-radius: 8px; padding: 6px 12px; font-size: 13px;
+}
+.query-result b { font-size: 15px; }
+.query-result-warn { background: var(--warn-weak); color: var(--warn); }
+.badge-ban { background: var(--bad-weak); color: var(--bad); font-weight: 600; }
+.chip-list-static { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.ban-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid #fecaca; background: #fff5f5; color: var(--bad);
+  border-radius: 999px; padding: 4px 8px 4px 12px; font-size: 13px; font-weight: 600;
+}
+.ban-chip .icon-btn { min-width: 24px; min-height: 24px; padding: 2px; }
+
 /* ---------- 打印 ---------- */
 .print-toolbar {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;

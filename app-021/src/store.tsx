@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Assignment, ClassEntity } from './types'
-import { storage } from './lib/storage'
+import { storage, normalizeClass } from './lib/storage'
 import { uid } from './lib/id'
 import { buildSeats } from './lib/layout'
 import {
@@ -9,8 +9,10 @@ import {
   generatePlan,
   regenerateFrom,
   regenerateSingleWeek,
+  regenerateWeeks,
 } from './lib/engine'
-import { previewSwap } from './lib/fairness'
+import { previewSwap, weekBlockedPairs } from './lib/fairness'
+import { canonicalPair } from './lib/deskmates'
 
 // ================= 集中式状态：所有业务逻辑在 Store，组件只做展示与派发 =================
 
@@ -41,6 +43,12 @@ interface StoreValue {
   swapStudents(id: string, week: number, seatA: string, seatB: string): Promise<RegenResult>
   undoSwap(id: string): Promise<void>
   canUndo(id: string): boolean
+  /** 更新同桌次数上限（默认 2）；只影响超限提醒与生成时的重复惩罚梯度，不改动已生成座位 */
+  setDeskmateLimit(id: string, limit: number): Promise<void>
+  /** 标记一对学生「以后不要再同桌」；随后自动重排受影响的历史周，返回重排了哪几周 */
+  addNeverPair(id: string, a: string, b: string, note?: string): Promise<RegenResult & { weeks?: number[] }>
+  /** 取消「永不同桌」标记（不自动重排） */
+  removeNeverPair(id: string, a: string, b: string): Promise<void>
 }
 
 const Ctx = createContext<StoreValue | null>(null)
@@ -89,10 +97,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         layout: { rows: 6, cols: 7, aisles: [3], mode: 'rows', doorSide: 'right' },
         seats: [],
         students: [],
-        constraints: { frontRows: 2, heightRule: true, mixTiers: true },
+        constraints: { frontRows: 2, heightRule: true, mixTiers: true, deskmateLimit: 2 },
         weeks: 20,
         seed: 42,
         assignments: [],
+        neverPairs: [],
       }
       cls.seats = buildSeats(cls.layout)
       await persist(cls)
@@ -105,7 +114,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     try {
       const res = await fetch('/samples/demo-class.json')
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const sample = (await res.json()) as ClassEntity
+      const sample = normalizeClass((await res.json()) as ClassEntity)
       const exists = classes.some((c) => c.id === sample.id)
       if (exists) sample.id = uid()
       if (exists) sample.name = `${sample.name}（副本）`
@@ -236,6 +245,60 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const canUndo = useCallback((id: string) => undoRef?.classId === id, [undoRef])
 
+  const setDeskmateLimit = useCallback(
+    async (id: string, limit: number) => {
+      const cls = classes.find((c) => c.id === id)
+      if (!cls) return
+      const v = Math.max(1, Math.min(20, Math.floor(limit) || 2))
+      await persist({ ...cls, constraints: { ...cls.constraints, deskmateLimit: v } })
+    },
+    [classes, persist],
+  )
+
+  const addNeverPair = useCallback(
+    async (id: string, a: string, b: string): Promise<RegenResult & { weeks?: number[] }> => {
+      const cls = classes.find((c) => c.id === id)
+      if (!cls) return { ok: false, error: '班级不存在' }
+      if (a === b) return { ok: false, error: '不能标记同一名学生' }
+      const [x, y] = canonicalPair(a, b)
+      if (cls.neverPairs.some((np) => np.a === x && np.b === y)) {
+        return { ok: false, error: '这一对已在「永不同桌」名单中' }
+      }
+      // 先找出哪些已生成周里这两人是同桌（这些周稍后必须重排）
+      const affected = cls.assignments
+        .filter((asg) => weekBlockedPairs({ ...cls, neverPairs: [...cls.neverPairs, { a: x, b: y, createdAt: 0 }] }, asg.map)
+          .some(([p, q]) => (p === x && q === y) || (p === y && q === x)))
+        .map((asg) => asg.week)
+      const marked: ClassEntity = {
+        ...cls,
+        neverPairs: [...cls.neverPairs, { a: x, b: y, createdAt: Date.now() }],
+      }
+      if (affected.length > 0) {
+        // 重排不可行（极端小班级等）时整体不落库，名单也不写，老师可调整座位规模后再标记
+        try {
+          const nextAssignments = regenerateWeeks(marked, new Set(affected))
+          await persist({ ...marked, assignments: nextAssignments })
+        } catch (e) {
+          return { ok: false, error: `标记未生效：无法在避开这一对的前提下重排受影响周次（${e instanceof Error ? e.message : String(e)}）`, weeks: [] }
+        }
+      } else {
+        await persist(marked)
+      }
+      return { ok: true, weeks: affected }
+    },
+    [classes, persist],
+  )
+
+  const removeNeverPair = useCallback(
+    async (id: string, a: string, b: string) => {
+      const cls = classes.find((c) => c.id === id)
+      if (!cls) return
+      const [x, y] = canonicalPair(a, b)
+      await persist({ ...cls, neverPairs: cls.neverPairs.filter((np) => !(np.a === x && np.b === y)) })
+    },
+    [classes, persist],
+  )
+
   const value = useMemo<StoreValue>(
     () => ({
       ready,
@@ -250,8 +313,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       swapStudents,
       undoSwap,
       canUndo,
+      setDeskmateLimit,
+      addNeverPair,
+      removeNeverPair,
     }),
-    [ready, classes, getClass, createClass, importSample, deleteClass, updateClass, updateSetup, regenerate, swapStudents, undoSwap, canUndo],
+    [ready, classes, getClass, createClass, importSample, deleteClass, updateClass, updateSetup, regenerate, swapStudents, undoSwap, canUndo, setDeskmateLimit, addNeverPair, removeNeverPair],
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

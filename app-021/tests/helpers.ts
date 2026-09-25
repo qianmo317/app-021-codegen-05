@@ -52,10 +52,12 @@ export function makeClass(o: ClassOverrides = {}): ClassEntity {
       frontRows: o.frontRows ?? 3,
       heightRule: o.heightRule ?? true,
       mixTiers: o.mixTiers ?? true,
+      deskmateLimit: 2,
     },
     weeks: o.weeks ?? 20,
     seed: o.seed ?? 42,
     assignments: [],
+    neverPairs: [],
   }
 }
 

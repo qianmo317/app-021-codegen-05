@@ -44,6 +44,15 @@ export function Setup({ classId }: { classId: string }) {
     updateSetup(next, configChanged)
   }
 
+  // 删除学生时同步清洗「必须分开」与「永不同桌」名单里的失效引用
+  const withoutStudent = (target: ClassEntity, id: string): ClassEntity => ({
+    ...target,
+    students: target.students
+      .filter((s) => s.id !== id)
+      .map((s) => ({ ...s, mustApartFrom: s.mustApartFrom.filter((x) => x !== id) })),
+    neverPairs: (target.neverPairs ?? []).filter((np) => np.a !== id && np.b !== id),
+  })
+
   return (
     <div className="page">
       <div className="page-head">
@@ -58,6 +67,9 @@ export function Setup({ classId }: { classId: string }) {
           </Link>
           <Link className="tab" to={`/class/${cls.id}/fairness`}>
             公平性报告
+          </Link>
+          <Link className="tab" to={`/class/${cls.id}/deskmates`}>
+            同桌记录
           </Link>
           <Link className="tab" to={`/class/${cls.id}/print`}>
             打印
@@ -80,7 +92,7 @@ export function Setup({ classId }: { classId: string }) {
 
       <LayoutEditor cls={cls} onSave={save} />
       <ConstraintEditor cls={cls} onSave={save} />
-      <StudentTable cls={cls} onSave={save} onEdit={(s) => setEditing(s)} onBulk={() => setBulkOpen(true)} />
+      <StudentTable cls={cls} onEdit={(s) => setEditing(s)} onBulk={() => setBulkOpen(true)} onRemove={(id) => save(withoutStudent(cls, id), true)} />
 
       {editing && (
         <StudentModal
@@ -97,18 +109,7 @@ export function Setup({ classId }: { classId: string }) {
           onDelete={
             editing.id
               ? () => {
-                  save(
-                    {
-                      ...cls,
-                      students: cls.students
-                        .filter((s) => s.id !== editing.id)
-                        .map((s) => ({
-                          ...s,
-                          mustApartFrom: s.mustApartFrom.filter((id) => id !== editing.id),
-                        })),
-                    },
-                    true,
-                  )
+                  save(withoutStudent(cls, editing.id), true)
                   setEditing(null)
                 }
               : undefined
@@ -238,6 +239,21 @@ function ConstraintEditor({ cls, onSave }: { cls: ClassEntity; onSave: (c: Class
             }
           />
         </label>
+        <label>
+          同桌次数上限（学期内任意两人最多同桌几次，默认 2；超限只提醒、不禁止）
+          <input
+            type="number"
+            min={1}
+            max={20}
+            value={cls.constraints.deskmateLimit ?? 2}
+            onChange={(e) =>
+              onSave(
+                { ...cls, constraints: { ...cls.constraints, deskmateLimit: clamp(Number(e.target.value), 1, 20) } },
+                false,
+              )
+            }
+          />
+        </label>
         <label className="checkbox">
           <input
             type="checkbox"
@@ -256,7 +272,8 @@ function ConstraintEditor({ cls, onSave }: { cls: ClassEntity; onSave: (c: Class
         </label>
       </div>
       <p className="muted small">
-        「必须分开」「固定座位」在每位学生条目中设置。硬约束在生成与手工微调时都会强制满足（违反数为 0）。
+        「必须分开」在每位学生条目中设置；「以后不要再同桌」可在「同桌记录」页随时追加。
+        两类都是硬约束，生成与手工微调时都会强制满足（违反数为 0）。
       </p>
     </section>
   )
@@ -265,14 +282,14 @@ function ConstraintEditor({ cls, onSave }: { cls: ClassEntity; onSave: (c: Class
 // ---------- 学生名单 ----------
 function StudentTable({
   cls,
-  onSave,
   onEdit,
   onBulk,
+  onRemove,
 }: {
   cls: ClassEntity
-  onSave: (c: ClassEntity, changed: boolean) => void
   onEdit: (s: Student) => void
   onBulk: () => void
+  onRemove: (id: string) => void
 }) {
   const nameOf = useMemo(() => new Map(cls.students.map((s) => [s.id, s.name])), [cls.students])
   const seatLabel = (id?: string) => {
@@ -334,17 +351,7 @@ function StudentTable({
                     <button
                       className="icon-btn"
                       title="删除"
-                      onClick={() =>
-                        onSave(
-                          {
-                            ...cls,
-                            students: cls.students
-                              .filter((x) => x.id !== s.id)
-                              .map((x) => ({ ...x, mustApartFrom: x.mustApartFrom.filter((id) => id !== s.id) })),
-                          },
-                          true,
-                        )
-                      }
+                      onClick={() => onRemove(s.id)}
                     >
                       <X size={14} />
                     </button>

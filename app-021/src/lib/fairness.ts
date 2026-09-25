@@ -1,5 +1,6 @@
 import type { ClassEntity, Seat, Student, StudentId } from '../types'
 import { buildSeatIndex, middleColSet, positionScore } from './layout'
+import { buildLedger, canonicalPair, pairKeyOf, pairsOverLimit, weekDeskmatePairs } from './deskmates'
 
 // ================= 公平性报告（§4.4 / §10） =================
 
@@ -26,33 +27,47 @@ export interface FairnessViolation {
   detail: string
 }
 
+export interface OverLimitPair {
+  aId: StudentId
+  bId: StudentId
+  a: string
+  b: string
+  count: number
+  weeks: number[]
+}
+
 export interface FairnessReport {
   rows: FairnessRow[]
   totalWeeks: number
   frontRowsRange: number // 「前 N 排」次数极差
   variance: number // 累计位置分方差 × 人数（Σ偏差²）
   std: number
-  deskmateOverLimit: { a: string; b: string; count: number }[] // 同桌 > 2 次的对
+  deskmateLimit: number // 老师设定的同桌次数上限（默认 2）
+  deskmateOverLimit: OverLimitPair[] // 同桌次数超过上限的对
   heightViolations: number
   hardViolations: FairnessViolation[]
+  // 「以后不要再同桌」名单在历史周中仍同桌的对（标记是事后加的，不算违规，供一键重排）
+  blockedHistory: FairnessViolation[]
+}
+
+/** 「永不同桌」名单的规范化集合（key = pairKeyOf） */
+export function neverPairSet(cls: ClassEntity): Set<string> {
+  return new Set((cls.neverPairs ?? []).map((np) => pairKeyOf(np.a, np.b)))
+}
+
+/** 某周座位表中撞上「永不同桌」名单的同桌对（id 对，已规范化） */
+export function weekBlockedPairs(cls: ClassEntity, map: Record<string, string>): [StudentId, StudentId][] {
+  const set = neverPairSet(cls)
+  if (set.size === 0) return []
+  const out: [StudentId, StudentId][] = []
+  for (const [a, b] of weekDeskmatePairs(cls, map)) {
+    if (set.has(pairKeyOf(a, b))) out.push([a, b])
+  }
+  return out
 }
 
 function deskmatePairIds(cls: ClassEntity, map: Record<string, string>): [string, string][] {
-  const idx = buildSeatIndex(cls.seats, cls.layout)
-  const byId = idx.byId
-  const out: [string, string][] = []
-  for (const [seatId, studentId] of Object.entries(map)) {
-    const seat = byId.get(seatId)
-    if (!seat) continue
-    const si = seat.row * cls.layout.cols + seat.col
-    for (const nb of idx.deskmates[si]) {
-      if (nb < si) continue // 去重（按座位下标）
-      const nbSeat = cls.seats[nb]
-      const other = map[nbSeat.id]
-      if (other && other !== studentId) out.push([studentId, other])
-    }
-  }
-  return out
+  return weekDeskmatePairs(cls, map).map(([a, b]) => canonicalPair(a, b))
 }
 
 // 某学生某周座位的个体硬约束违反描述（用于报告与手工交换校验）
@@ -97,6 +112,21 @@ export function weekHardViolations(cls: ClassEntity, week: number, map: Record<s
     const sb = cls.students.find((s) => s.id === b)
     if (sa && sb && (sa.mustApartFrom.includes(b) || sb.mustApartFrom.includes(a))) {
       out.push(`第 ${week} 周：${sa.name} 与 ${sb.name} 必须分开却成为同桌`)
+    }
+  }
+  return out
+}
+
+/**
+ * 「永不同桌」冲突的周次明细。这是老师事后标记才出现的历史遗留（生成与手工交换
+ * 都会强制避开），不算硬约束违反，但需要提示老师重排受影响的周。
+ */
+export function blockedHistoryViolations(cls: ClassEntity): FairnessViolation[] {
+  const out: FairnessViolation[] = []
+  const nameOf = new Map(cls.students.map((s) => [s.id, s.name]))
+  for (const asg of [...cls.assignments].sort((a, b) => a.week - b.week)) {
+    for (const [a, b] of weekBlockedPairs(cls, asg.map)) {
+      out.push({ week: asg.week, detail: `第 ${asg.week} 周：${nameOf.get(a) ?? a} 与 ${nameOf.get(b) ?? b} 被标记为永不同桌，仍是同桌` })
     }
   }
   return out
@@ -208,18 +238,17 @@ export function computeFairness(cls: ClassEntity): FairnessReport {
   const frVals = cls.students.map((s) => frontRowsCount.get(s.id) ?? 0)
   const frontRowsRange = frVals.length ? Math.max(...frVals) - Math.min(...frVals) : 0
 
-  const deskmateOverLimit: { a: string; b: string; count: number }[] = []
   const nameOf = new Map(cls.students.map((s) => [s.id, s.name]))
-  const seen = new Set<string>()
-  for (const [sid, others] of deskCount) {
-    for (const [oid, count] of others) {
-      const key = [sid, oid].sort().join('|')
-      if (count > 2 && !seen.has(key)) {
-        seen.add(key)
-        deskmateOverLimit.push({ a: nameOf.get(sid) ?? sid, b: nameOf.get(oid) ?? oid, count })
-      }
-    }
-  }
+  const deskmateOverLimit: OverLimitPair[] = pairsOverLimit(buildLedger(cls), cls.constraints.deskmateLimit ?? 2).map(
+    (p) => ({
+      aId: p.a,
+      bId: p.b,
+      a: nameOf.get(p.a) ?? p.a,
+      b: nameOf.get(p.b) ?? p.b,
+      count: p.count,
+      weeks: p.weeks,
+    }),
+  )
 
   for (const s of cls.students) {
     const deskmates = [...(deskCount.get(s.id)?.entries() ?? [])]
@@ -246,9 +275,11 @@ export function computeFairness(cls: ClassEntity): FairnessReport {
     frontRowsRange,
     variance,
     std,
+    deskmateLimit: cls.constraints.deskmateLimit ?? 2,
     deskmateOverLimit,
     heightViolations,
     hardViolations,
+    blockedHistory: blockedHistoryViolations(cls),
   }
 }
 
@@ -279,6 +310,16 @@ export function previewSwap(cls: ClassEntity, week: number, seatAId: string, sea
   const before = weekStats(cls, asg.map, week)
   const after = weekStats(cls, map, week)
   const violations = weekHardViolations(cls, week, map)
+
+  // 「永不同桌」只拦截本次交换**新引入**的冲突：该周历史遗留的同名单冲突
+  // （老师事后才标记的）不算在这次交换头上，但也不允许制造新的。
+  const nameOf = new Map(cls.students.map((s) => [s.id, s.name]))
+  const blockedBefore = new Set(weekBlockedPairs(cls, asg.map).map(([x, y]) => pairKeyOf(x, y)))
+  for (const [x, y] of weekBlockedPairs(cls, map)) {
+    if (blockedBefore.has(pairKeyOf(x, y))) continue
+    violations.push(`第 ${week} 周：${nameOf.get(x) ?? x} 与 ${nameOf.get(y) ?? y} 已标记「以后不要再同桌」，不能安排为同桌`)
+  }
+
   return {
     ok: violations.length === 0,
     reasons: violations,

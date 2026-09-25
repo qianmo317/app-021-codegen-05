@@ -23,8 +23,10 @@
 4. **轮换生成**：填入周数（1~52，默认 20）与种子，一次生成第 1..N 周；同参数 + 同种子结果完全一致（可复现）。
 5. **手工微调**：在某一周拖拽两个座位交换，拖拽途中实时显示「位置分偏差² 前后值 / 重复同桌对前后值 / 是否违反硬约束」；违反硬约束的交换被拒绝并给出原因；合法交换可一键撤销。
 6. **增量重排**：`重新生成本周`（其余周不变）与 `从本周起重排`（早于该周的周次保持不变），两个入口都在轮换页生成面板上。
-7. **公平性报告**：逐人统计前 N 排次数、前 / 中 / 后 1/3 行次数、中间列次数、平均位置分、最常同桌与同桌次数；全班汇总硬约束违反数、前 N 排次数极差、位置分 Σ偏差²、同桌超 2 次的对、身高序违背。
-8. **导出与打印**：按周座位表 CSV、公平性统计 CSV（带 BOM，Excel 直接打开）；打印页按周渲染 A4 纵向座位表，含讲台方向条与标记说明页脚。
+7. **公平性报告**：逐人统计前 N 排次数、前 / 中 / 后 1/3 行次数、中间列次数、平均位置分、最常同桌与同桌次数；全班汇总硬约束违反数、前 N 排次数极差、位置分 Σ偏差²、同桌超上限的对、身高序违背。
+8. **同桌台账**（长期盯同桌）：逐周记录每个同桌对；查任意两人本学期同桌次数与周次；每人「和谁坐得最多」（并列全列）；「连续一整个月（4 周）都跟同一个人坐」单独列出；超过老师设定上限（默认 2，可改）的对整行标红、附周次与「下次换座分开」建议；台账由 assignments 派生，重新生成/手工调整任意一周后立即更新；可导出台账 CSV。
+9. **「以后不要再同桌」名单**：老师对任意一对（含超限对、整月同桌对）一键标记；生成引擎与手工交换预览把它当硬约束强制避开；标记时若已生成周里该对正同桌，自动**只重排受影响周**（`regenerateWeeks()`，其余周 map 原样保留），也可随时取消标记。
+10. **导出与打印**：按周座位表 CSV、公平性统计 CSV、同桌台账 CSV（带 BOM，Excel 直接打开）；打印页按周渲染 A4 纵向座位表，含讲台方向条与标记说明页脚。
 
 ## 5. 进阶功能
 - 座位特殊标记（`stage_side` 讲台侧）的界面化标注。
@@ -35,9 +37,10 @@
 ## 6. 页面结构
 ```
 /                          班级列表（新建 / 导入示例班级 40 人 / 删除）
-/class/:id/setup           座位布局 + 硬性约束 + 学生名单（无子路径时的默认页）
+/class/:id/setup           座位布局 + 硬性约束（含同桌次数上限）+ 学生名单（无子路径时的默认页）
 /class/:id/rotations       轮换结果（生成面板、周次切换、拖拽微调、侧栏统计）
 /class/:id/fairness        公平性报告（汇总卡片、占比条形图、逐人表格、导出 CSV）
+/class/:id/deskmates       同桌记录（汇总卡片、两人查询、整月同桌、超限表、永不同桌名单、全班台账、导出 CSV）
 /class/:id/print           打印座位表（全部周 / 单周，A4 纵向，每周一页）
 ```
 路由是自写的 `useSyncExternalStore` + `history.pushState`（`src/router.tsx`），不引入第三方路由库；无法匹配的路径渲染「页面不存在」。
@@ -51,19 +54,24 @@ type Special = 'hearing'|'mobility'
 interface Seat    { id: string /* r{row}c{col} */; row: number /* 0 = 最靠讲台 */; col: number; group?: string; tags: SeatTag[] }
 interface Student { id: string; name: string; heightCm?: number; vision: Vision; special?: Special[];
                     tier?: 1|2|3; mustApartFrom: string[]; fixedSeatId?: string; note?: string }
-interface Constraints  { frontRows: number; heightRule: boolean; mixTiers: boolean }
+interface Constraints  { frontRows: number; heightRule: boolean; mixTiers: boolean; deskmateLimit: number /* 默认 2 */ }
+interface NeverPair     { a: StudentId; b: StudentId; createdAt: number; note?: string } // 「以后不要再同桌」（规范化无向对）
 interface LayoutConfig { rows: number; cols: number; aisles: number[]; mode: 'rows'|'groups'; doorSide: 'left'|'right' }
 interface Assignment   { week: number; map: Record<SeatId, StudentId>; score: { fairness: number; repeats: number } }
 interface ClassEntity  { id: string; name: string; createdAt: number; updatedAt: number; layout: LayoutConfig;
                          seats: Seat[]; students: Student[]; constraints: Constraints;
-                         weeks: number; seed: number; assignments: Assignment[] }
+                         weeks: number; seed: number; assignments: Assignment[];
+                         neverPairs: NeverPair[] }
 class InfeasibleError extends Error {}
 ```
-新建班级默认值：`rows:6, cols:7, aisles:[3], mode:'rows', doorSide:'right'`，`frontRows:2, heightRule:true, mixTiers:true`，`weeks:20, seed:42`（`src/store.tsx:89-95`）。持久化用 IndexedDB（库名 `app-021-seating`、对象仓 `classes`、`keyPath:'id'`）；无 `indexedDB` 时退化为内存实现（`src/lib/storage.ts:23-24,66`）。所有业务逻辑集中在 `StoreProvider`，页面只做展示与派发（`src/store.tsx:15`）。
+新建班级默认值：`rows:6, cols:7, aisles:[3], mode:'rows', doorSide:'right'`，`frontRows:2, heightRule:true, mixTiers:true, deskmateLimit:2`，`weeks:20, seed:42, neverPairs:[]`。持久化用 IndexedDB（库名 `app-021-seating`、对象仓 `classes`、`keyPath:'id'`）；无 `indexedDB` 时退化为内存实现（`src/lib/storage.ts`）。读出旧数据时经 `normalizeClass()` 补齐 `deskmateLimit` / `neverPairs` 并清洗失效、重复、自指的对。所有业务逻辑集中在 `StoreProvider`，页面只做展示与派发（`src/store.tsx`）。
 
 ## 8. 关键算法
 - **位置分**：`positionScore(seat) = rowWeight + middleWeight`，`rowWeight = row/(rows-1)*2 ∈ [0,2]`，`middleWeight = |col-(cols-1)/2| / ((cols-1)/2) ∈ [0,1]`，**分数越低位置越好**（`src/lib/layout.ts:52-57`）。中间列集合取到中轴距离不超过半宽一半的连续块（`layout.ts:61-68`）。
-- **约束模型**：个体硬约束为视力需前排（`row < frontRows`）、视力需中间列、听力需前一半排（`ceil(rows/2)`）、行动不便需靠过道（座位 `aisle` 或首末列）、固定座位；成对硬约束为「必须分开」不得同桌。硬约束在代价函数中用 `HARD = 1e7` 表示，等价于禁止（`src/lib/engine.ts:11,115-138`）。
+- **约束模型**：个体硬约束为视力需前排（`row < frontRows`）、视力需中间列、听力需前一半排（`ceil(rows/2)`）、行动不便需靠过道（座位 `aisle` 或首末列）、固定座位；成对硬约束为「必须分开」与老师标记的「**以后不要再同桌**」（`cls.neverPairs`，在 `prepare()` 中并入同一个 `apartSet`）不得同桌。硬约束在代价函数中用 `HARD = 1e7` 表示，等价于禁止（`src/lib/engine.ts:11,115-145`）。
+- **同桌次数上限**：`constraints.deskmateLimit`（默认 2）只改变重复惩罚梯度——历史次数 `< limit` 轻罚（`REPEAT1=3`）、`== limit` 再坐就超限故重罚（`REPEAT2=60`）、超限后极重罚（`REPEAT3=500`）；超限本身不禁止，台账与报告会标出并建议分开（与「永不同桌」的硬禁止区分）。
+- **同桌台账**：`src/lib/deskmates.ts` 从 `assignments` 逐周重建（`buildLedger()`），同桌对提取复用布局索引 `deskmates`（行列=左右相邻无过道、小组=同组全员）；`queryPair(a,b)` 给出次数与升序周次，`topPartners()` 给出最常同桌（并列全列），`monthLongPairs(4)` 用连续段切分 `runsOf()` 找连续 ≥4 周的对子，`pairsOverLimit(limit)` 列超限对。因为是纯派生，任何一周生成或手工交换后无需同步，下次渲染即最新。
+- **永不同桌的历史周修复**：新增标记时 store 先扫描 `weekBlockedPairs()` 找出该对正同桌的周，再用新增的 `regenerateWeeks(cls, weekSet)`（`engine.ts`）按周次升序逐个重排——每重排一周都以「未重排周 + 已重排周」重建 `buildHistory()`，其余周的 map 原样保留；任一周在 6 次尝试内找不到可行解则整笔标记不落库并提示原因。手工交换 `previewSwap()` 只拦截**本次新引入**的永不同桌冲突，历史遗留撞车不拦无关交换（`fairness.ts`）。
 - **代价常量**：`W_HEIGHT = 4`（身高序违背）、`W_MIX = 2`（同桌同分层）、`FRESH_PAIR = 0.3`（新同桌微奖励），同桌第 1 / 2 / 3 次重复为 `REPEAT1 = 3`、`REPEAT2 = 60`、`REPEAT3 = 500`（`engine.ts:12-17`）；同桌对用 `pairKey(a,b) = a*4096+b` 编码（`engine.ts:110-112`）。
 - **初始分配**：固定座位学生先落位；其余学生按「可行座位数从少到多」贪心，每人在可行座位中随机挑一个；无可行座位时抛 `InfeasibleError` 并说明是哪一类座位不足（`engine.ts:179-223`）。
 - **模拟退火**：`iters = min(60000, max(15000, n*400))`，温度从 `T0 = 3.0` 按几何下降 `T = T0·(T1/T0)^(it/iters)` 到 `T1 = 0.02`；每步随机取一个非固定学生与一个随机座位做移动 / 交换，`Δ ≤ 0` 或 `rand < exp(-Δ/T)` 时接受（`engine.ts:468-492`）。退火后最多 200 轮贪心修复残余硬约束（`engine.ts:495-526`）；单周最多重试 `MAX_ATTEMPTS = 6` 次，仍不可行则抛错（`engine.ts:19,573-585`）。
@@ -86,7 +94,7 @@ class InfeasibleError extends Error {}
 - **同桌重复**：同配置 20 周，同桌超 2 次的对必须为 0（`tests/acceptance.test.ts:39-47`）。
 - **边界容量**：30 人坐 40 座（含空位）生成 8 周，每周映射恰好 30 条且硬约束违反为 0（`tests/acceptance.test.ts:49-59`）。
 - **可复现与性能**：同种子结果完全一致、不同种子第 1 周不同（`tests/engine.test.ts:12-26`）；40 人 × 20 周生成耗时 < 1000ms（`tests/engine.test.ts:153-163`）。
-- **测试规模**：vitest 30 个用例（acceptance 4 / engine 15 / layout 5 / rng 3 / csv 2 / storage 1），Playwright 13 个用例（journey 6 / sample 7）；E2E 针对 `vite preview`（4173）运行（`vitest.config.ts`、`playwright.config.ts`）。
+- **测试规模**：vitest 44 个用例（acceptance 4 / engine 15 / layout 5 / rng 3 / csv 2 / storage 1 / deskmates 14），Playwright 15 个用例（journey 6 / sample 7 / deskmates 2）；E2E 针对 `vite preview`（4173）运行（`vitest.config.ts`、`playwright.config.ts`）。
 - **E2E 关键断言**：示例班级 40 人、5×8；生成 20 周后硬约束显示 0；固定座位学生被拖走时预览提示「违反硬约束」且座位不变；合法交换后硬约束仍为 0 且可撤销；刷新后 20 周结果与座位图完全一致（IndexedDB 持久化）；重复导入示例班级生成「副本」而非覆盖（`e2e/sample.spec.ts`）。
 
 ## 11. 边界（刻意不做）
@@ -94,7 +102,7 @@ class InfeasibleError extends Error {}
 
 ### 已知实现边界（README 声称 vs 代码实现）
 - README 功能 §3 把「身高排序（高个靠后）」列入硬性约束并称「违反数为 0」，实际代码里它是**软惩罚**：`W_HEIGHT = 4` 只进入退火代价（`engine.ts:12,429`），不参与 `HARD` 判定，公平性报告另算 `heightViolations`（`fairness.ts:178-195`、`Fairness.tsx:99-104`），因此可能大于 0。
-- README 算法节写「任意两人同桌 ≤ 2 次」，实际是软目标：第 3 / 4 次同桌的惩罚为 `REPEAT2 = 60` / `REPEAT3 = 500`（`engine.ts:16-17`），不是禁止级；示例班级配置下验收为 0（`tests/acceptance.test.ts:45`），但不构成数学保证。
+- README 算法节写「任意两人同桌 ≤ 上限」，超限本身仍是软目标：达到上限后的惩罚为 `REPEAT2 = 60`、超限后 `REPEAT3 = 500`（`engine.ts`），不是禁止级；示例班级配置下验收为 0（`tests/acceptance.test.ts:45`），但不构成数学保证。需要硬性保证时，老师可把具体对子加入「以后不要再同桌」名单（与必须分开同级，违反数必为 0）。
 - README 算法节称「均衡每人前 N 排次数，极差 ≤ 3」：该断言只在**无固定座位**的用例中被断言（`tests/acceptance.test.ts:29-34`）；示例班级含 10 个固定座位时 E2E 只校验数值如实渲染，测试注释也写明固定座位会把极差拉大（`e2e/sample.spec.ts:24-27`）。
 - `generateMissingWeeks()`（周数调大后补齐缺失周次）在引擎与 store 中已实现，`RegenMode` 也含 `'missing'`（`store.tsx:17,178-180`），但轮换页的 `regen()` 只暴露 `all` / `from` / `week` 三种模式（`Rotations.tsx:45`），UI 无补齐入口。
 - `SeatTag` 的 `stage_side` 在 `buildSeats()` 中从不生成，`Seat.group` 字段也从不写入（分组信息实际放在 `tags` 的 `group:G{n}` 里）；Setup 页只在说明文字里提到「讲台侧等特殊座位标记可在需求中补充说明」（`layout.ts:10-29`、`Setup.tsx:208-212`）。
