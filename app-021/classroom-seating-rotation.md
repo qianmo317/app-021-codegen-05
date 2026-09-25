@@ -23,8 +23,9 @@
 4. **轮换生成**：填入周数（1~52，默认 20）与种子，一次生成第 1..N 周；同参数 + 同种子结果完全一致（可复现）。
 5. **手工微调**：在某一周拖拽两个座位交换，拖拽途中实时显示「位置分偏差² 前后值 / 重复同桌对前后值 / 是否违反硬约束」；违反硬约束的交换被拒绝并给出原因；合法交换可一键撤销。
 6. **增量重排**：`重新生成本周`（其余周不变）与 `从本周起重排`（早于该周的周次保持不变），两个入口都在轮换页生成面板上。
-7. **公平性报告**：逐人统计前 N 排次数、前 / 中 / 后 1/3 行次数、中间列次数、平均位置分、最常同桌与同桌次数；全班汇总硬约束违反数、前 N 排次数极差、位置分 Σ偏差²、同桌超 2 次的对、身高序违背。
-8. **导出与打印**：按周座位表 CSV、公平性统计 CSV（带 BOM，Excel 直接打开）；打印页按周渲染 A4 纵向座位表，含讲台方向条与标记说明页脚。
+7. **公平性报告**：逐人统计前 N 排次数、前 / 中 / 后 1/3 行次数、中间列次数、平均位置分、最常同桌与同桌次数；全班汇总硬约束违反数、前 N 排次数极差、位置分 Σ偏差²、同桌超上限的对、身高序违背。
+8. **同桌长期台账**（`/class/:id/deskmates`）：逐周记录全部同桌对（生成 / 手工微调后由 `buildDeskmateLedger()` 从 assignments 重算，不存副本）；任意两人查询同桌次数与具体周次；每人「和谁坐得最多」（并列全列）；按「学期第 1 周周一」把周次映射自然月，标出连续同桌周次完整覆盖整月的对；同桌次数上限可配（默认 2，`constraints.maxDeskmateTimes`），超限对红标 + 「下次换座分开」建议；可把任意一对加入 `blockedPairs`（以后不要再同桌），引擎按 HARD 级硬约束每周避开、手工拖拽也拦截，可随时取消。
+9. **导出与打印**：按周座位表 CSV、公平性统计 CSV、同桌台账 / 每人同桌汇总 / 指定两人同桌记录 CSV（带 BOM，Excel 直接打开）；打印页按周渲染 A4 纵向座位表，含讲台方向条与标记说明页脚。
 
 ## 5. 进阶功能
 - 座位特殊标记（`stage_side` 讲台侧）的界面化标注。
@@ -38,6 +39,7 @@
 /class/:id/setup           座位布局 + 硬性约束 + 学生名单（无子路径时的默认页）
 /class/:id/rotations       轮换结果（生成面板、周次切换、拖拽微调、侧栏统计）
 /class/:id/fairness        公平性报告（汇总卡片、占比条形图、逐人表格、导出 CSV）
+/class/:id/deskmates       同桌台账（汇总卡片、上限/学期起始设置、两人查询、超限红榜、整月同桌、每人最常同桌、全部对、黑名单、CSV）
 /class/:id/print           打印座位表（全部周 / 单周，A4 纵向，每周一页）
 ```
 路由是自写的 `useSyncExternalStore` + `history.pushState`（`src/router.tsx`），不引入第三方路由库；无法匹配的路径渲染「页面不存在」。
@@ -51,25 +53,28 @@ type Special = 'hearing'|'mobility'
 interface Seat    { id: string /* r{row}c{col} */; row: number /* 0 = 最靠讲台 */; col: number; group?: string; tags: SeatTag[] }
 interface Student { id: string; name: string; heightCm?: number; vision: Vision; special?: Special[];
                     tier?: 1|2|3; mustApartFrom: string[]; fixedSeatId?: string; note?: string }
-interface Constraints  { frontRows: number; heightRule: boolean; mixTiers: boolean }
+interface Constraints  { frontRows: number; heightRule: boolean; mixTiers: boolean; maxDeskmateTimes: number /* 同桌上限，默认 2 */ }
+interface BlockedPair  { a: StudentId; b: StudentId; createdAt: number; note?: string } /* 「以后不要再同桌」 */
 interface LayoutConfig { rows: number; cols: number; aisles: number[]; mode: 'rows'|'groups'; doorSide: 'left'|'right' }
 interface Assignment   { week: number; map: Record<SeatId, StudentId>; score: { fairness: number; repeats: number } }
 interface ClassEntity  { id: string; name: string; createdAt: number; updatedAt: number; layout: LayoutConfig;
                          seats: Seat[]; students: Student[]; constraints: Constraints;
-                         weeks: number; seed: number; assignments: Assignment[] }
+                         weeks: number; seed: number; assignments: Assignment[];
+                         blockedPairs?: BlockedPair[]; termStart?: string /* 学期第1周周一 ISO，用于整月判定 */ }
 class InfeasibleError extends Error {}
 ```
 新建班级默认值：`rows:6, cols:7, aisles:[3], mode:'rows', doorSide:'right'`，`frontRows:2, heightRule:true, mixTiers:true`，`weeks:20, seed:42`（`src/store.tsx:89-95`）。持久化用 IndexedDB（库名 `app-021-seating`、对象仓 `classes`、`keyPath:'id'`）；无 `indexedDB` 时退化为内存实现（`src/lib/storage.ts:23-24,66`）。所有业务逻辑集中在 `StoreProvider`，页面只做展示与派发（`src/store.tsx:15`）。
 
 ## 8. 关键算法
 - **位置分**：`positionScore(seat) = rowWeight + middleWeight`，`rowWeight = row/(rows-1)*2 ∈ [0,2]`，`middleWeight = |col-(cols-1)/2| / ((cols-1)/2) ∈ [0,1]`，**分数越低位置越好**（`src/lib/layout.ts:52-57`）。中间列集合取到中轴距离不超过半宽一半的连续块（`layout.ts:61-68`）。
-- **约束模型**：个体硬约束为视力需前排（`row < frontRows`）、视力需中间列、听力需前一半排（`ceil(rows/2)`）、行动不便需靠过道（座位 `aisle` 或首末列）、固定座位；成对硬约束为「必须分开」不得同桌。硬约束在代价函数中用 `HARD = 1e7` 表示，等价于禁止（`src/lib/engine.ts:11,115-138`）。
-- **代价常量**：`W_HEIGHT = 4`（身高序违背）、`W_MIX = 2`（同桌同分层）、`FRESH_PAIR = 0.3`（新同桌微奖励），同桌第 1 / 2 / 3 次重复为 `REPEAT1 = 3`、`REPEAT2 = 60`、`REPEAT3 = 500`（`engine.ts:12-17`）；同桌对用 `pairKey(a,b) = a*4096+b` 编码（`engine.ts:110-112`）。
+- **约束模型**：个体硬约束为视力需前排（`row < frontRows`）、视力需中间列、听力需前一半排（`ceil(rows/2)`）、行动不便需靠过道（座位 `aisle` 或首末列）、固定座位；成对硬约束为「必须分开」与「以后不要再同桌」（`blockedPairs`，二者并入同一 `apartSet`）不得同桌。硬约束在代价函数中用 `HARD = 1e7` 表示，等价于禁止（`src/lib/engine.ts:11,115-138`）。
+- **代价常量**：`W_HEIGHT = 4`（身高序违背）、`W_MIX = 2`（同桌同分层）、`FRESH_PAIR = 0.3`（新同桌微奖励），同桌重复惩罚按可配上限 `constraints.maxDeskmateTimes`（默认 2）分档：历史已同桌 `count < limit` 时 `REPEAT_SOFT = 3`，再同桌将达到 `count+1 > limit` 时 `REPEAT_LIMIT = 60`、更后续 `REPEAT_OVER = 500`（engine.ts 同桌惩罚节）；同桌对用 `pairKey(a,b) = a*4096+b` 编码（引擎内下标），台账层用 id 排序串 `${a}|${b}`（`src/lib/deskmates.ts`）。
 - **初始分配**：固定座位学生先落位；其余学生按「可行座位数从少到多」贪心，每人在可行座位中随机挑一个；无可行座位时抛 `InfeasibleError` 并说明是哪一类座位不足（`engine.ts:179-223`）。
 - **模拟退火**：`iters = min(60000, max(15000, n*400))`，温度从 `T0 = 3.0` 按几何下降 `T = T0·(T1/T0)^(it/iters)` 到 `T1 = 0.02`；每步随机取一个非固定学生与一个随机座位做移动 / 交换，`Δ ≤ 0` 或 `rand < exp(-Δ/T)` 时接受（`engine.ts:468-492`）。退火后最多 200 轮贪心修复残余硬约束（`engine.ts:495-526`）；单周最多重试 `MAX_ATTEMPTS = 6` 次，仍不可行则抛错（`engine.ts:19,573-585`）。
 - **公平性目标**：最小化每人累计位置分的偏差平方和，同时最小化每人「前 N 排」次数相对理想值 `idealF = weeks × frontSeats / n` 的偏差平方和（`engine.ts:270,324-342`）。
 - **可复现与增量**：随机源为 `mulberry32` + `hashSeed(seed, week, attempt)`，生成路径不使用 `Math.random`（`src/lib/rng.ts`）；`generatePlan` / `regenerateFrom` / `regenerateSingleWeek` / `generateMissingWeeks` 通过 `buildHistory()` 复用已生成周次的累计位置分、前排计数与同桌次数，保证重排不影响目标周次之外的结果（`engine.ts:148-176,590-640`）。
-- **公平性报告**：`variance = Σx² − (Σx)²/n`，`std = sqrt(variance/n)`；位置分按 `positionScore` 累计，前 N 排次数按 `row < frontRows` 计，前 / 中 / 后按 1/3 行划分；同桌重复按无向对去重统计，`count > 2` 进入超限列表（`src/lib/fairness.ts:132-253`）。手工交换前用 `previewSwap()` 复用同一套判定，违反数为 0 才允许提交（`fairness.ts:267-292`、`store.tsx:197-198`）。
+- **公平性报告**：`variance = Σx² − (Σx)²/n`，`std = sqrt(variance/n)`；位置分按 `positionScore` 累计，前 N 排次数按 `row < frontRows` 计，前 / 中 / 后按 1/3 行划分；同桌重复按无向对去重统计，`count > constraints.maxDeskmateTimes`（默认 2）进入超限列表（`src/lib/fairness.ts`、`src/lib/deskmates.ts`）。手工交换前用 `previewSwap()` 复用同一套判定（含「必须分开」与 `blockedPairs`），违反数为 0 才允许提交。
+- **同桌台账与整月判定**：`buildDeskmateLedger(cls)` 逐周从座位布局（`buildSeatIndex().deskmates`）提取无向同桌对，累积为 `pairs: Map<key, {a,b,weeks[],count,overLimit,blocked}>` 与 `byStudent` 邻接计数；`summarizeStudents()` 给每人最常同桌（并列全列）与整月记录，`wholeMonthRuns()` 枚举每对的连续周次段（周次差 1 连续、至少跨 3 周），用 `termStart`（缺省回退建班当周周一）换算周一日期，当周次段的周一 ≤ 当月 1 日且末周周日 ≥ 当月最后一天即判定整月同桌（`src/lib/deskmates.ts`）。上限调整只改标记、不动座位表；黑名单加入后经 `generatePlan` / `regenerateSingleWeek` / `regenerateFrom` / `generateMissingWeeks` 全部路径生效（它们共用 `prepare()` 构建的 `apartSet`）。
 
 ## 9. 交互与视觉要点
 - 座位图用 CSS Grid 渲染，过道位置插入 14px 斜纹空隙列；座位底色区分前 / 中 / 后排，靠窗用左侧内阴影、靠门用右侧内阴影，空位为虚线（`src/components/SeatGrid.tsx:22-35`、`src/styles.css:146-161`）。
@@ -83,7 +88,8 @@ class InfeasibleError extends Error {}
 ## 10. 验收标准
 - **硬约束**：100 组随机配置（4~6 排 × 6~8 列、5 名需前排、2 名需中间、1 名听力、3 对必须分开、10 个固定座位，种子 1~100）× 20 周，`weekHardViolations` 总数必须为 0（`tests/acceptance.test.ts:8-25`）。
 - **公平性**：40 人 5×8、前 3 排、种子 42、20 周，前 3 排次数极差 ≤ 3 且硬约束违反为 0（`tests/acceptance.test.ts:27-37`）。
-- **同桌重复**：同配置 20 周，同桌超 2 次的对必须为 0（`tests/acceptance.test.ts:39-47`）。
+- **同桌重复**：同配置 20 周，同桌超上限（默认 2）的对必须为 0（`tests/acceptance.test.ts:39-47`）。
+- **同桌台账**：逐周累积与周次查询、可配上限即时重算（座位表不动）、黑名单经生成 / 单周重生成严格避开且 0 硬违反、连续周次完整覆盖自然月才计入「整月同桌」（`tests/deskmates.test.ts`，12 用例）。
 - **边界容量**：30 人坐 40 座（含空位）生成 8 周，每周映射恰好 30 条且硬约束违反为 0（`tests/acceptance.test.ts:49-59`）。
 - **可复现与性能**：同种子结果完全一致、不同种子第 1 周不同（`tests/engine.test.ts:12-26`）；40 人 × 20 周生成耗时 < 1000ms（`tests/engine.test.ts:153-163`）。
 - **测试规模**：vitest 30 个用例（acceptance 4 / engine 15 / layout 5 / rng 3 / csv 2 / storage 1），Playwright 13 个用例（journey 6 / sample 7）；E2E 针对 `vite preview`（4173）运行（`vitest.config.ts`、`playwright.config.ts`）。

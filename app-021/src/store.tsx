@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Assignment, ClassEntity } from './types'
+import { DEFAULT_MAX_DESKMATE_TIMES } from './types'
 import { storage } from './lib/storage'
 import { uid } from './lib/id'
 import { buildSeats } from './lib/layout'
@@ -11,6 +12,7 @@ import {
   regenerateSingleWeek,
 } from './lib/engine'
 import { previewSwap } from './lib/fairness'
+import { addBlockedPair, removeBlockedPair } from './lib/deskmates'
 
 // ================= 集中式状态：所有业务逻辑在 Store，组件只做展示与派发 =================
 
@@ -27,6 +29,27 @@ export interface RegenResult {
   error?: string
 }
 
+// 旧版本数据（无同桌上限 / 黑名单字段）加载时补齐默认值
+function normalizeClass(c: ClassEntity): ClassEntity {
+  let changed = false
+  if (typeof c.constraints?.maxDeskmateTimes !== 'number') {
+    c.constraints = { ...c.constraints, maxDeskmateTimes: DEFAULT_MAX_DESKMATE_TIMES }
+    changed = true
+  }
+  if (!Array.isArray(c.blockedPairs)) {
+    c.blockedPairs = []
+    changed = true
+  }
+  return changed ? { ...c } : c
+}
+
+function thisWeekMondayISO(): string {
+  const d = new Date()
+  const day = d.getDay() // 0=周日
+  d.setDate(d.getDate() - (day === 0 ? 6 : day - 1))
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 interface StoreValue {
   ready: boolean
   classes: ClassEntity[]
@@ -41,6 +64,14 @@ interface StoreValue {
   swapStudents(id: string, week: number, seatA: string, seatB: string): Promise<RegenResult>
   undoSwap(id: string): Promise<void>
   canUndo(id: string): boolean
+  /** 设置同桌次数上限（默认 2），即时影响超限标记；不改动已有座位表 */
+  setDeskmateLimit(id: string, limit: number): Promise<void>
+  /** 标记某一对「以后不要再同桌」（此后每周生成都按硬约束避开） */
+  blockPair(id: string, a: string, b: string, note?: string): Promise<void>
+  /** 取消「以后不要再同桌」标记 */
+  unblockPair(id: string, a: string, b: string): Promise<void>
+  /** 设置学期第 1 周周一（用于按自然月判定整月同桌）；传空串清空 */
+  setTermStart(id: string, iso: string): Promise<void>
 }
 
 const Ctx = createContext<StoreValue | null>(null)
@@ -59,7 +90,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     storage
       .getAll()
-      .then((all) => setClasses(all.sort((a, b) => a.createdAt - b.createdAt)))
+      .then((all) =>
+        setClasses(
+          all
+            .map(normalizeClass)
+            .sort((a, b) => a.createdAt - b.createdAt),
+        ),
+      )
       .catch((e) => console.error('读取本地数据失败', e))
       .finally(() => setReady(true))
   }, [])
@@ -89,10 +126,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         layout: { rows: 6, cols: 7, aisles: [3], mode: 'rows', doorSide: 'right' },
         seats: [],
         students: [],
-        constraints: { frontRows: 2, heightRule: true, mixTiers: true },
+        constraints: { frontRows: 2, heightRule: true, mixTiers: true, maxDeskmateTimes: DEFAULT_MAX_DESKMATE_TIMES },
         weeks: 20,
         seed: 42,
         assignments: [],
+        blockedPairs: [],
+        termStart: thisWeekMondayISO(),
       }
       cls.seats = buildSeats(cls.layout)
       await persist(cls)
@@ -105,7 +144,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     try {
       const res = await fetch('/samples/demo-class.json')
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const sample = (await res.json()) as ClassEntity
+      const sample = normalizeClass((await res.json()) as ClassEntity)
       const exists = classes.some((c) => c.id === sample.id)
       if (exists) sample.id = uid()
       if (exists) sample.name = `${sample.name}（副本）`
@@ -236,6 +275,43 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const canUndo = useCallback((id: string) => undoRef?.classId === id, [undoRef])
 
+  const setDeskmateLimit = useCallback(
+    async (id: string, limit: number) => {
+      const cls = classes.find((c) => c.id === id)
+      if (!cls) return
+      const n = Math.max(1, Math.min(20, Math.floor(limit) || DEFAULT_MAX_DESKMATE_TIMES))
+      await persist({ ...cls, constraints: { ...cls.constraints, maxDeskmateTimes: n } })
+    },
+    [classes, persist],
+  )
+
+  const blockPair = useCallback(
+    async (id: string, a: string, b: string, note?: string) => {
+      const cls = classes.find((c) => c.id === id)
+      if (!cls || a === b) return
+      await persist({ ...cls, blockedPairs: addBlockedPair(cls, a, b, note) })
+    },
+    [classes, persist],
+  )
+
+  const unblockPair = useCallback(
+    async (id: string, a: string, b: string) => {
+      const cls = classes.find((c) => c.id === id)
+      if (!cls) return
+      await persist({ ...cls, blockedPairs: removeBlockedPair(cls, a, b) })
+    },
+    [classes, persist],
+  )
+
+  const setTermStart = useCallback(
+    async (id: string, iso: string) => {
+      const cls = classes.find((c) => c.id === id)
+      if (!cls) return
+      await persist({ ...cls, termStart: iso || undefined })
+    },
+    [classes, persist],
+  )
+
   const value = useMemo<StoreValue>(
     () => ({
       ready,
@@ -250,8 +326,29 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       swapStudents,
       undoSwap,
       canUndo,
+      setDeskmateLimit,
+      blockPair,
+      unblockPair,
+      setTermStart,
     }),
-    [ready, classes, getClass, createClass, importSample, deleteClass, updateClass, updateSetup, regenerate, swapStudents, undoSwap, canUndo],
+    [
+      ready,
+      classes,
+      getClass,
+      createClass,
+      importSample,
+      deleteClass,
+      updateClass,
+      updateSetup,
+      regenerate,
+      swapStudents,
+      undoSwap,
+      canUndo,
+      setDeskmateLimit,
+      blockPair,
+      unblockPair,
+      setTermStart,
+    ],
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

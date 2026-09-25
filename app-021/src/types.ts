@@ -2,7 +2,7 @@
 export type SeatTag =
   | 'front'      // 前排（自动：前 1/3 行）
   | 'middle'     // 中排（自动）
-  | 'back'       // 后排（自动：后 1/3 行）
+  | 'back'       // 后排（自动：前 1/3 行）
   | 'aisle'      // 靠过道（自动/手动）
   | 'window'     // 靠窗
   | 'door'       // 靠门
@@ -26,7 +26,7 @@ export interface Student {
   vision: Vision
   special?: Special[]
   tier?: 1 | 2 | 3 // 学习分层（可选，用于搭配策略）
-  mustApartFrom: string[] // 必须分开的学生 id
+  mustApartFrom: string[] // 必须分开的学生 id（硬约束：不能同桌）
   fixedSeatId?: string // 固定座位
   note?: string // 备注
 }
@@ -44,6 +44,7 @@ export interface Constraints {
   frontRows: number // 视力需求学生必须在前 N 排
   heightRule: boolean // 高个靠后
   mixTiers: boolean // 同桌分层搭配（学习好的带一般的）
+  maxDeskmateTimes: number // 同桌次数上限（超过即标红并建议下次分开），默认 2
 }
 
 export interface LayoutConfig {
@@ -52,6 +53,14 @@ export interface LayoutConfig {
   aisles: number[] // 过道位于第 i 列与第 i+1 列之间（i 从 0 开始）
   mode: 'rows' | 'groups' // 行列排座 / 小组围坐
   doorSide: 'left' | 'right'
+}
+
+// 教师标记「以后不要再同桌」的学生对（无向；生成时按硬约束避开）
+export interface BlockedPair {
+  a: StudentId
+  b: StudentId
+  createdAt: number
+  note?: string
 }
 
 export interface ClassEntity {
@@ -66,6 +75,8 @@ export interface ClassEntity {
   weeks: number
   seed: number
   assignments: Assignment[]
+  blockedPairs?: BlockedPair[]
+  termStart?: string // 学期第 1 周周一的 ISO 日期（用于按自然月统计「整月同桌」）
 }
 
 export interface GenParams {
@@ -79,3 +90,5 @@ export class InfeasibleError extends Error {
     this.name = 'InfeasibleError'
   }
 }
+
+export const DEFAULT_MAX_DESKMATE_TIMES = 2

@@ -296,3 +296,54 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand-weak)
   .topbar-note { display: none; }
   .print-sheet { width: 100%; padding: 16px; }
 }
+
+/* ================= 同桌台账页 ================= */
+.week-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.week-chip {
+  display: inline-block; min-width: 22px; text-align: center;
+  padding: 1px 6px; border-radius: 6px; font-size: 12px;
+  background: var(--brand-weak); color: #1d4ed8;
+}
+.week-chip-strong { background: var(--warn-weak); color: var(--warn); font-weight: 700; }
+.badge-danger {
+  display: inline-flex; align-items: center; gap: 3px;
+  background: var(--bad-weak); color: var(--bad);
+  border-radius: 6px; padding: 2px 8px; font-size: 12px; font-weight: 700;
+}
+.badge-warn {
+  display: inline-flex; align-items: center; gap: 3px;
+  background: var(--warn-weak); color: var(--warn);
+  border-radius: 6px; padding: 2px 8px; font-size: 12px; font-weight: 700;
+}
+.btn-danger-outline {
+  border-color: #fca5a5; color: var(--bad); background: #fff;
+}
+.btn-danger-outline:hover { background: var(--bad-weak); }
+.row-danger { background: #fffafa; }
+.row-danger:hover { background: #fef2f2; }
+.inline-ico { display: inline; vertical-align: -2px; margin: 0 2px; }
+
+.query-result {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 10px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: #f8fafc;
+}
+.query-result-bad { border-color: #fecaca; background: #fffafa; }
+.query-head { display: flex; align-items: center; gap: 8px; width: 100%; flex-wrap: wrap; }
+
+.card-inner { /* 嵌在卡片里的浅色块 */ }
+
+.month-run-list { display: flex; flex-direction: column; gap: 8px; }
+.month-run-item {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 10px; border: 1px solid #fde68a; border-radius: 8px; background: #fffbeb;
+}
+
+.blocked-list { display: flex; flex-direction: column; gap: 6px; }
+.blocked-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border: 1px solid #fecaca; border-radius: 8px; background: #fffafa;
+}
+.select-md { width: 170px; }
+.tied-names { display: inline-flex; flex-wrap: wrap; gap: 4px 10px; }

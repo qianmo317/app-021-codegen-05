@@ -39,6 +39,9 @@ export function Fairness({ classId }: { classId: string }) {
             轮换结果
           </Link>
           <span className="tab tab-active">公平性报告</span>
+          <Link className="tab" to={`/class/${cls.id}/deskmates`}>
+            同桌台账
+          </Link>
           <Link className="tab" to={`/class/${cls.id}/print`}>
             打印
           </Link>
@@ -94,7 +97,7 @@ export function Fairness({ classId }: { classId: string }) {
               <span className={`stat-num ${report.deskmateOverLimit.length ? 'warn' : ''}`} data-testid="fair-desk">
                 {report.deskmateOverLimit.length}
               </span>
-              <span className="stat-label">同桌超 2 次的对</span>
+              <span className="stat-label">同桌超 {report.limit} 次的对</span>
             </div>
             <div className="card stat">
               <span className="stat-num" data-testid="fair-height">
@@ -119,10 +122,14 @@ export function Fairness({ classId }: { classId: string }) {
 
           {report.deskmateOverLimit.length > 0 && (
             <div className="card warn-card">
-              <h3>同桌超限报告（目标：任意两人 ≤ 2 次）</h3>
+              <h3>同桌超限报告（目标：任意两人 ≤ {report.limit} 次）</h3>
               <p>
-                {report.deskmateOverLimit.map((d) => `${d.a}–${d.b}（${d.count} 次）`).join('、')}
+                {report.deskmateOverLimit.map((d) => `${d.a}–${d.b}（${d.count} 次${d.blocked ? '，已标记分开' : ''}）`).join('、')}
               </p>
+              <p className="small">建议：下次换座时把这些人分开；可在「同桌台账」页一键标记「以后不要再同桌」。</p>
+              <Link className="btn btn-sm" to={`/class/${cls.id}/deskmates`}>
+                去同桌台账处理 →
+              </Link>
             </div>
           )}
 
@@ -188,7 +195,7 @@ export function Fairness({ classId }: { classId: string }) {
                         <td>{r.avgScore.toFixed(2)}</td>
                         <td>{top ? (nameById.get(top.studentId) ?? '') : '—'}</td>
                         <td>{top?.count ?? 0}</td>
-                        <td>{r.maxDeskmateRepeat > 2 ? <span className="warn-text">同桌超限</span> : <CheckCircle2 size={13} className="good" />}</td>
+                        <td>{r.maxDeskmateRepeat > report.limit ? <span className="warn-text">同桌超限</span> : <CheckCircle2 size={13} className="good" />}</td>
                       </tr>
                     )
                   })}

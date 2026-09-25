@@ -12,9 +12,9 @@ const HARD = 1e7
 const W_HEIGHT = 4 // 身高序违背权重 w4
 const W_MIX = 2 // 同桌同分层惩罚（mixTiers）
 const FRESH_PAIR = 0.3 // 新同桌微弱惩罚（鼓励换新同桌）
-const REPEAT1 = 3 // 同桌第 2 次重复
-const REPEAT2 = 60 // 第 3 次重复（超出「不超过 2 次」目标，重罚）
-const REPEAT3 = 500 // 第 4 次及以上
+const REPEAT_SOFT = 3 // 尚未达上限的重复同桌
+const REPEAT_LIMIT = 60 // 已达上限（第 limit+1 次起；超限即重罚，促使下周分开）
+const REPEAT_OVER = 500 // 继续重复
 
 const MAX_ATTEMPTS = 6
 
@@ -40,6 +40,7 @@ interface Prepared {
   frontSeats: number
   heightRule: boolean
   mixTiers: boolean
+  deskLimit: number // 同桌次数上限（count 达到后再同桌即重罚）
 }
 
 function prepare(cls: ClassEntity): Prepared {
@@ -70,13 +71,17 @@ function prepare(cls: ClassEntity): Prepared {
   })
 
   const apartSet = new Set<number>()
-  students.forEach((s, i) => {
-    for (const otherId of s.mustApartFrom) {
-      const j = stIdx.get(otherId)
-      if (j === undefined || j === i) continue
-      apartSet.add(pairKey(i, j))
-    }
-  })
+  const addApart = (idA: string, idB: string) => {
+    const i = stIdx.get(idA)
+    const j = stIdx.get(idB)
+    if (i === undefined || j === undefined || i === j) return
+    apartSet.add(pairKey(i, j))
+  }
+  // 学生条目中的「必须分开」 + 教师在同桌台账中标记的「以后不要再同桌」
+  for (const s of students) {
+    for (const otherId of s.mustApartFrom) addApart(s.id, otherId)
+  }
+  for (const bp of cls.blockedPairs ?? []) addApart(bp.a, bp.b)
 
   const heights = new Float64Array(n).fill(-1)
   const tier = new Int8Array(n)
@@ -86,6 +91,12 @@ function prepare(cls: ClassEntity): Prepared {
   })
 
   const frontRows = Math.max(1, Math.min(cls.constraints.frontRows, cls.layout.rows))
+  const deskLimit =
+    typeof cls.constraints.maxDeskmateTimes === 'number' &&
+    Number.isFinite(cls.constraints.maxDeskmateTimes) &&
+    cls.constraints.maxDeskmateTimes >= 1
+      ? Math.floor(cls.constraints.maxDeskmateTimes)
+      : 2
   return {
     idx,
     students,
@@ -104,6 +115,7 @@ function prepare(cls: ClassEntity): Prepared {
     frontSeats: frontRows * cls.layout.cols,
     heightRule: cls.constraints.heightRule,
     mixTiers: cls.constraints.mixTiers,
+    deskLimit,
   }
 }
 
@@ -124,11 +136,20 @@ function violOf(p: Prepared, st: number, seatIdx: number): number {
   return v
 }
 
-// 同桌对惩罚（含「必须分开」= 硬约束、分层搭配、重复次数）
+// 同桌对惩罚（含「必须分开 / 以后不要再同桌」= 硬约束、分层搭配、重复次数）
 function pairPen(p: Prepared, deskCount: Map<number, number>, key: number): number {
   if (p.apartSet.has(key)) return HARD
   const count = deskCount.get(key) ?? 0
-  let pen = count === 0 ? FRESH_PAIR : count === 1 ? REPEAT1 : count === 2 ? REPEAT2 : REPEAT3
+  // count 为「历史周次中已同桌次数」；再同桌一次将达到 count+1 次：
+  // 达到上限即重罚（促使下周分开），低于上限的重复只做温和惩罚
+  let pen =
+    count === 0
+      ? FRESH_PAIR
+      : count < p.deskLimit
+        ? REPEAT_SOFT
+        : count === p.deskLimit
+          ? REPEAT_LIMIT
+          : REPEAT_OVER
   if (p.mixTiers) {
     const ta = p.tier[Math.floor(key / 4096)]
     const tb = p.tier[key % 4096]

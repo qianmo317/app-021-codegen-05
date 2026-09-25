@@ -88,6 +88,9 @@ export function Rotations({ classId }: { classId: string }) {
           <Link className="tab" to={`/class/${cls.id}/fairness`}>
             公平性报告
           </Link>
+          <Link className="tab" to={`/class/${cls.id}/deskmates`}>
+            同桌台账
+          </Link>
           <Link className="tab" to={`/class/${cls.id}/print`}>
             打印
           </Link>
@@ -260,19 +263,28 @@ export function Rotations({ classId }: { classId: string }) {
                 <dd>{rep.variance.toFixed(1)}</dd>
               </div>
               <div>
-                <dt>同桌超 2 次的对</dt>
+                <dt>同桌超 {rep.limit} 次的对</dt>
                 <dd className={rep.deskmateOverLimit.length ? 'warn' : ''} data-testid="desk-over">
                   {rep.deskmateOverLimit.length}
                 </dd>
+              </div>
+              <div>
+                <dt>已标记「不要再同桌」</dt>
+                <dd data-testid="blocked-over">{rep.blockedCount}</dd>
               </div>
               <div>
                 <dt>身高序违背</dt>
                 <dd data-testid="height-violations">{rep.heightViolations}</dd>
               </div>
             </dl>
-            <Link className="btn btn-sm" to={`/class/${cls.id}/fairness`}>
-              查看完整报告 →
-            </Link>
+            <div className="row-flex">
+              <Link className="btn btn-sm" to={`/class/${cls.id}/fairness`}>
+                查看完整报告 →
+              </Link>
+              <Link className="btn btn-sm" to={`/class/${cls.id}/deskmates`}>
+                同桌台账 →
+              </Link>
+            </div>
           </div>
           <div className="card stat-card muted small">
             <p>拖拽两个座位即可交换（违反硬约束的交换会被拒绝）；悬停时下方实时显示交换影响。</p>

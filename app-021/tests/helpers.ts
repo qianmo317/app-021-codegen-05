@@ -26,6 +26,7 @@ export interface ClassOverrides {
   frontRows?: number
   heightRule?: boolean
   mixTiers?: boolean
+  maxDeskmateTimes?: number
   weeks?: number
   seed?: number
   name?: string
@@ -52,6 +53,7 @@ export function makeClass(o: ClassOverrides = {}): ClassEntity {
       frontRows: o.frontRows ?? 3,
       heightRule: o.heightRule ?? true,
       mixTiers: o.mixTiers ?? true,
+      maxDeskmateTimes: o.maxDeskmateTimes ?? 2,
     },
     weeks: o.weeks ?? 20,
     seed: o.seed ?? 42,

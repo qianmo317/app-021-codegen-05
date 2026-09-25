@@ -1,5 +1,6 @@
 import type { ClassEntity, Seat, Student, StudentId } from '../types'
 import { buildSeatIndex, middleColSet, positionScore } from './layout'
+import { isBlockedPair, maxDeskmateLimit } from './deskmates'
 
 // ================= 公平性报告（§4.4 / §10） =================
 
@@ -29,10 +30,12 @@ export interface FairnessViolation {
 export interface FairnessReport {
   rows: FairnessRow[]
   totalWeeks: number
+  limit: number // 同桌次数上限（超过即标记）
   frontRowsRange: number // 「前 N 排」次数极差
   variance: number // 累计位置分方差 × 人数（Σ偏差²）
   std: number
-  deskmateOverLimit: { a: string; b: string; count: number }[] // 同桌 > 2 次的对
+  deskmateOverLimit: { a: string; b: string; count: number; blocked: boolean }[] // 同桌超过上限的对
+  blockedCount: number // 被标记「以后不要再同桌」的对数
   heightViolations: number
   hardViolations: FairnessViolation[]
 }
@@ -97,6 +100,8 @@ export function weekHardViolations(cls: ClassEntity, week: number, map: Record<s
     const sb = cls.students.find((s) => s.id === b)
     if (sa && sb && (sa.mustApartFrom.includes(b) || sb.mustApartFrom.includes(a))) {
       out.push(`第 ${week} 周：${sa.name} 与 ${sb.name} 必须分开却成为同桌`)
+    } else if (sa && sb && isBlockedPair(cls, a, b)) {
+      out.push(`第 ${week} 周：${sa.name} 与 ${sb.name} 已被标记「以后不要再同桌」`)
     }
   }
   return out
@@ -208,15 +213,21 @@ export function computeFairness(cls: ClassEntity): FairnessReport {
   const frVals = cls.students.map((s) => frontRowsCount.get(s.id) ?? 0)
   const frontRowsRange = frVals.length ? Math.max(...frVals) - Math.min(...frVals) : 0
 
-  const deskmateOverLimit: { a: string; b: string; count: number }[] = []
+  const limit = maxDeskmateLimit(cls)
+  const deskmateOverLimit: { a: string; b: string; count: number; blocked: boolean }[] = []
   const nameOf = new Map(cls.students.map((s) => [s.id, s.name]))
   const seen = new Set<string>()
   for (const [sid, others] of deskCount) {
     for (const [oid, count] of others) {
       const key = [sid, oid].sort().join('|')
-      if (count > 2 && !seen.has(key)) {
+      if (count > limit && !seen.has(key)) {
         seen.add(key)
-        deskmateOverLimit.push({ a: nameOf.get(sid) ?? sid, b: nameOf.get(oid) ?? oid, count })
+        deskmateOverLimit.push({
+          a: nameOf.get(sid) ?? sid,
+          b: nameOf.get(oid) ?? oid,
+          count,
+          blocked: isBlockedPair(cls, sid, oid),
+        })
       }
     }
   }
@@ -243,10 +254,12 @@ export function computeFairness(cls: ClassEntity): FairnessReport {
   return {
     rows,
     totalWeeks: assignments.length,
+    limit,
     frontRowsRange,
     variance,
     std,
     deskmateOverLimit,
+    blockedCount: cls.blockedPairs?.length ?? 0,
     heightViolations,
     hardViolations,
   }

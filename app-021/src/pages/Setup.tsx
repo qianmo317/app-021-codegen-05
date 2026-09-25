@@ -59,6 +59,9 @@ export function Setup({ classId }: { classId: string }) {
           <Link className="tab" to={`/class/${cls.id}/fairness`}>
             公平性报告
           </Link>
+          <Link className="tab" to={`/class/${cls.id}/deskmates`}>
+            同桌台账
+          </Link>
           <Link className="tab" to={`/class/${cls.id}/print`}>
             打印
           </Link>
